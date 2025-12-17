@@ -83,52 +83,66 @@ const SetupScreen = ({
       return;
     }
 
+    let data: any;
+
+    // 1. Try to parse strictly as JSON first (handles valid JSON correctly)
     try {
-      // 1. Attempt to sanitize Python-style string representation to JSON
-      // Replace single quotes with double quotes
-      // Note: This is a basic heuristic. 
-      let sanitized = rawTagInput
-        .replace(/'/g, '"') 
-        .replace(/None/g, 'null')
-        .replace(/True/g, 'true')
-        .replace(/False/g, 'false');
-
-      let data: any;
+      data = JSON.parse(rawTagInput);
+    } catch (e) {
+      // 2. If valid JSON fails, attempt to sanitize Python-style string representation
+      // Replace single quotes with double quotes, None/True/False -> null/true/false
       try {
+        let sanitized = rawTagInput
+          .replace(/'/g, '"') 
+          .replace(/None/g, 'null')
+          .replace(/True/g, 'true')
+          .replace(/False/g, 'false');
         data = JSON.parse(sanitized);
-      } catch (e) {
-        setTagParseError("格式无效。请确保是有效的 JSON 或 Python 列表语法。");
+      } catch (e2) {
+        setTagParseError("格式无效。请确保是有效的 JSON 或 Python 字典/列表语法。");
         return;
       }
+    }
 
-      if (!Array.isArray(data)) {
-        setTagParseError("根元素必须是列表/数组 (List/Array)。");
-        return;
-      }
-
+    try {
       const definitions: TagDefinition[] = [];
       const seenTags = new Set<string>();
 
-      // Extract logic based on the provided structure:
-      // [{'short_point': [{'title1':..., 'title2':..., 'tag':..., 'content':...}]}]
-      data.forEach((item: any, index: number) => {
-        if (item.short_point && Array.isArray(item.short_point)) {
-          item.short_point.forEach((sp: any) => {
-            if (sp.tag && !seenTags.has(sp.tag)) {
-              definitions.push({
-                tag: sp.tag,
-                title1: sp.title1 || '',
-                title2: sp.title2 || '',
-                content: sp.content || ''
-              });
-              seenTags.add(sp.tag);
-            }
-          });
+      // Helper to process short_point array
+      const processShortPoints = (points: any[]) => {
+        if (!Array.isArray(points)) return;
+        points.forEach((sp: any) => {
+          if (sp.tag && !seenTags.has(sp.tag)) {
+            definitions.push({
+              tag: sp.tag,
+              title1: sp.title1 || '',
+              title2: sp.title2 || '',
+              content: sp.content || ''
+            });
+            seenTags.add(sp.tag);
+          }
+        });
+      };
+
+      if (Array.isArray(data)) {
+        // Support original format: [{'short_point': [...]}, ...]
+        data.forEach((item: any) => {
+          if (item.short_point && Array.isArray(item.short_point)) {
+            processShortPoints(item.short_point);
+          }
+        });
+      } else if (typeof data === 'object' && data !== null) {
+        // Support new format: {"long_point": {...}, "short_point": [...]}
+        if (data.short_point && Array.isArray(data.short_point)) {
+          processShortPoints(data.short_point);
         }
-      });
+      } else {
+        setTagParseError("根元素必须是列表(List)或对象(Object)。");
+        return;
+      }
 
       if (definitions.length === 0) {
-        setTagParseError("在提供的数据结构中未找到 'short_point' 标签。");
+        setTagParseError("在提供的数据结构中未找到有效的 'short_point' 标签数据。");
       } else {
         setParsedTags(definitions);
         setTagParseError(null);
@@ -458,7 +472,7 @@ const SetupScreen = ({
                 <div className="relative flex-1">
                   <textarea
                     className="w-full h-32 md:h-40 px-4 py-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs font-mono text-slate-700 dark:text-slate-200 placeholder-slate-400 transition-all shadow-sm resize-none"
-                    placeholder="在此粘贴 Python 风格的列表... 例如 [{'short_point': [{'title1': '...', 'tag': '...', 'content': '...'}]}]"
+                    placeholder={`在此粘贴 Python 风格的列表或 JSON 对象... \n例如: \n{"long_point": {...}, "short_point": [{"tag": "...", "title1": "...", "content": "..."}]}\n或\n[{'short_point': [...]}]`}
                     value={rawTagInput}
                     onChange={(e) => setRawTagInput(e.target.value)}
                   />
@@ -821,440 +835,361 @@ const SummaryView = ({
               </h3>
             </div>
             
-            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
               {groupImages.map(img => (
                 <div 
                   key={img.id} 
-                  onClick={() => onSelect(img)}
-                  className="aspect-square relative group cursor-pointer rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:ring-2 hover:ring-blue-500 transition-all"
+                  onClick={() => onSelect(img)} 
+                  className="group relative aspect-square bg-slate-100 dark:bg-slate-900 rounded-xl overflow-hidden cursor-pointer"
                 >
-                  <img src={img.url} alt="" className="w-full h-full object-cover" loading="lazy" />
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                  <img src={img.url} alt="" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" loading="lazy" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
+                  {/* Mini Overlay for multi-tag info */}
+                  {img.tags.length > 1 && (
+                     <div className="absolute bottom-1 right-1 bg-black/50 text-white text-[10px] px-1.5 rounded-md backdrop-blur-sm">
+                       +{img.tags.length - 1}
+                     </div>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         );
       })}
-      
-      {/* Empty State if all groups are empty (shouldn't happen if there are images, but good safety) */}
-      {images.length === 0 && (
-        <div className="text-center py-10 text-slate-500">无可汇总的图片。</div>
-      )}
     </div>
   );
 };
 
-const Lightbox = ({ 
-  image, 
-  availableTags,
-  onToggleTag,
-  onClose,
-  onNext,
-  onPrev,
-  hasPrev,
-  hasNext,
-  currentIndex,
-  totalCount
-}: { 
-  image: ImageItem; 
-  availableTags: TagDefinition[];
-  onToggleTag: (tag: string) => void;
-  onClose: () => void; 
-  onNext: () => void;
-  onPrev: () => void;
-  hasPrev: boolean;
-  hasNext: boolean;
-  currentIndex: number;
-  totalCount: number;
-}) => {
-  useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'ArrowRight' && hasNext) onNext();
-      if (e.key === 'ArrowLeft' && hasPrev) onPrev();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => {
-      document.body.style.overflow = 'unset';
-      window.removeEventListener('keydown', handleKey);
-    };
-  }, [onClose, onNext, onPrev, hasNext, hasPrev]);
+// --- Main App Component ---
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col sm:flex-row bg-slate-950/95 backdrop-blur-md animate-fade-in">
-      {/* Main Image Area */}
-      <div className="relative flex-1 h-full flex items-center justify-center p-4 sm:p-8" onClick={onClose}>
-        {/* Navigation Buttons (Floating) */}
-        {hasPrev && (
-          <button 
-            onClick={(e) => { e.stopPropagation(); onPrev(); }}
-            className="absolute left-4 p-3 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors z-50 backdrop-blur-md"
-          >
-            <ChevronLeft className="w-8 h-8" />
-          </button>
-        )}
-        
-        {hasNext && (
-          <button 
-            onClick={(e) => { e.stopPropagation(); onNext(); }}
-            className="absolute right-4 p-3 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors z-50 backdrop-blur-md"
-          >
-            <ChevronRight className="w-8 h-8" />
-          </button>
-        )}
-
-        <img 
-          src={image.url} 
-          alt={image.filename} 
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-[85vh] w-auto max-w-full object-contain rounded-lg shadow-2xl"
-        />
-        
-        <div className="absolute top-4 right-4 z-50 flex gap-2">
-          <button 
-            onClick={onClose}
-            className="p-3 rounded-full bg-white/10 text-white hover:bg-red-500/80 transition-colors backdrop-blur-md"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-
-      {/* Sidebar / Controls Panel */}
-      <div 
-        className="w-full sm:w-80 bg-white dark:bg-slate-900 border-t sm:border-t-0 sm:border-l border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-6 overflow-y-auto shadow-2xl z-50"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="font-semibold text-lg text-slate-900 dark:text-white mb-1">标注图片</h3>
-            <p className="text-xs text-slate-500 break-all">{image.filename}</p>
-            {(image.hotelId || image.originalImageId) && (
-              <div className="flex flex-col gap-0.5 mt-2">
-                 {image.hotelId && <span className="text-xs font-mono text-slate-400">酒店 ID: {image.hotelId}</span>}
-                 {image.hotelName && <span className="text-xs font-mono text-slate-400 block">{image.hotelName}</span>}
-                 {image.originalImageId && <span className="text-xs font-mono text-slate-400 block">图片 ID: {image.originalImageId}</span>}
-              </div>
-            )}
-          </div>
-          <div className="flex-shrink-0 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs font-mono font-medium text-slate-600 dark:text-slate-400">
-            {currentIndex + 1} / {totalCount}
-          </div>
-        </div>
-
-        <div className="flex-1">
-          <label className="text-sm font-medium text-slate-500 dark:text-slate-400 mb-3 block">可用标签</label>
-          <div className="flex flex-col gap-2">
-            {availableTags.length > 0 ? availableTags.map(def => (
-              <button
-                key={def.tag}
-                onClick={() => onToggleTag(def.tag)}
-                className={`
-                  flex items-center justify-between px-3 py-3 rounded-lg text-left transition-all
-                  ${image.tags.includes(def.tag)
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 transform scale-105'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                  }
-                `}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                     {image.tags.includes(def.tag) ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> : <Plus className="w-3.5 h-3.5 flex-shrink-0" />}
-                     <span className="font-medium text-sm truncate">{def.tag}</span>
-                  </div>
-                  <div className={`text-[10px] mt-0.5 truncate ${image.tags.includes(def.tag) ? 'text-blue-100' : 'text-slate-400'}`}>
-                    {def.title1} / {def.title2}
-                  </div>
-                  {def.content && (
-                    <div className={`text-[10px] mt-0.5 leading-tight line-clamp-2 ${image.tags.includes(def.tag) ? 'text-blue-100/80' : 'text-slate-400/80'}`}>
-                      {def.content}
-                    </div>
-                  )}
-                </div>
-              </button>
-            )) : (
-              <p className="text-sm text-slate-400 italic">未定义标签。</p>
-            )}
-          </div>
-        </div>
-
-        <div className="border-t border-slate-200 dark:border-slate-800 pt-6 mt-auto">
-          <div className="grid grid-cols-2 gap-3">
-             <button 
-               className="flex items-center justify-center gap-2 p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-sm"
-               onClick={() => window.open(image.url, '_blank')}
-             >
-               <ExternalLink className="w-4 h-4" /> 打开
-             </button>
-             <button 
-               className="flex items-center justify-center gap-2 p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-sm"
-               onClick={() => navigator.clipboard.writeText(image.url)}
-             >
-               <Copy className="w-4 h-4" /> 复制
-             </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// --- Main App ---
-
-export default function App() {
+const App = () => {
   const [step, setStep] = useState<AppStep>('setup');
-  const [viewMode, setViewMode] = useState<ViewMode>('grid');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
-  
-  // Data State
   const [images, setImages] = useState<ImageItem[]>([]);
   const [tagDefs, setTagDefs] = useState<TagDefinition[]>([]);
+  
+  // View State
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Selection
+  const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null);
 
-  // Setup Handlers
-  const handleStart = (loadedData: ImageItem[], definitions: TagDefinition[]) => {
+  // Handlers
+  const handleStart = (loadedData: ImageItem[], tags: TagDefinition[]) => {
     setImages(loadedData);
-    setTagDefs(definitions);
+    setTagDefs(tags);
     setStep('labeling');
   };
 
   const handleLoadDemo = () => {
-    // Generate dummy items
-    const demoItems = IMAGE_URLS.map((url, index) => {
-       const parts = url.split('/');
-       let filename = parts[parts.length - 1] || 'image';
-       filename = filename.split('?')[0];
-       return {
-         id: `img-demo-${index}`,
-         url,
-         filename,
-         tags: []
-       }
-    });
-    setImages(demoItems);
-    setTagDefs([
-      { tag: "故宫景餐厅", title1: "餐饮", title2: "特色餐饮", content: "文华扒房提供优质牛排海鲜并俯瞰紫禁城，紫膳主理新派粤菜..." },
-      { tag: "核心景点便捷", title1: "酒店位置", title2: "景点", content: "位于王府中环顶层，步行可达故宫、天安门广场及北京胡同..." },
-      { tag: "主题水疗泳池", title1: "酒店设施", title2: "康养设施", content: "水疗中心设镜、花、水、月四间主题芳疗套房..." }
-    ]);
+    const demoImages = IMAGE_URLS.map((url, idx) => ({
+      id: `img-demo-${idx}`,
+      url,
+      filename: url.split('/').pop() || `image-${idx}.jpg`,
+      tags: [],
+      hotelId: 524021,
+      hotelName: "Demo Hotel",
+      originalImageId: 1000 + idx
+    }));
+
+    const demoTags: TagDefinition[] = [
+      { tag: "外观", title1: "外观", title2: "建筑", content: "酒店外部整体建筑风格，包含白天和夜景" },
+      { tag: "大堂", title1: "公共区域", title2: "大堂", content: "前台接待区域、休息区及入口大厅" },
+      { tag: "客房", title1: "客房", title2: "卧室", content: "标准间、套房等各类客房内部展示" },
+      { tag: "餐厅", title1: "餐饮", title2: "餐厅", content: "中餐厅、西餐厅、自助餐厅等用餐环境" },
+      { tag: "泳池", title1: "设施", title2: "泳池", content: "室内外游泳池及周边休闲设施" },
+      { tag: "健身房", title1: "设施", title2: "健身", content: "跑步机、力量训练区等健身器材展示" },
+      { tag: "会议室", title1: "商务", title2: "会议", content: "大中小型会议室及宴会厅" },
+    ];
+    
+    setImages(demoImages);
+    setTagDefs(demoTags);
     setStep('labeling');
   };
 
-  const handleImportSession = (importedData: ImageItem[], restoredDefs: TagDefinition[]) => {
-    setImages(importedData);
-    setTagDefs(restoredDefs);
-    setStep('labeling');
+  const handleImportSession = (importedImages: ImageItem[], importedTags: TagDefinition[]) => {
+      setImages(importedImages);
+      setTagDefs(importedTags);
+      setStep('labeling');
   };
 
   const handleReset = () => {
-    if (confirm("确定要返回吗？所有未保存的进度都将丢失。")) {
-      setStep('setup');
-      setImages([]);
-      setTagDefs([]);
-      setSearchTerm('');
-    }
+     if(confirm("确定要返回首页吗？当前的标注进度将会丢失（除非您已导出）。")) {
+        setStep('setup');
+        setImages([]);
+        setTagDefs([]);
+        setSelectedImage(null);
+     }
   };
 
-  // Tagging Logic
+  // Labeling Logic
   const handleToggleTag = (imageId: string, tag: string) => {
     setImages(prev => prev.map(img => {
-      if (img.id !== imageId) return img;
-      const hasTag = img.tags.includes(tag);
-      return {
-        ...img,
-        tags: hasTag ? img.tags.filter(t => t !== tag) : [...img.tags, tag]
-      };
+      if (img.id === imageId) {
+        const hasTag = img.tags.includes(tag);
+        return {
+          ...img,
+          tags: hasTag ? img.tags.filter(t => t !== tag) : [...img.tags, tag]
+        };
+      }
+      return img;
     }));
   };
 
   const handleExport = () => {
-    // Transform to requested flattened format
-    // Each tag on an image becomes a separate row. 
-    // Unlabeled images are included with empty tag fields to preserve them in the dataset.
-    // Strictly following schema: hotel_id, title1, title2, tag name, image_id, image_url
-    
+    // Flatten Data Structure for Export
     const exportData: any[] = [];
+    
+    // Create a lookup for tag details
+    const tagLookup = new Map<string, TagDefinition>();
+    tagDefs.forEach(def => tagLookup.set(def.tag, def));
 
     images.forEach(img => {
-      // If image has no tags, add one entry with empty fields to keep track of it
-      if (img.tags.length === 0) {
-        exportData.push({
-           "hotel_id": img.hotelId || "",
-           "title1": "",
-           "title2": "",
-           "tag name": "",
-           "image_id": img.originalImageId || img.id,
-           "image_url": img.url
-        });
-      } else {
-        // Create a row for each tag
-        img.tags.forEach(tagStr => {
-           const def = tagDefs.find(d => d.tag === tagStr);
+       if (img.tags.length === 0) {
+           // Export untagged images too? Yes, usually useful.
            exportData.push({
-              "hotel_id": img.hotelId || "",
-              "title1": def?.title1 || "",
-              "title2": def?.title2 || "",
-              "tag name": tagStr,
-              "image_id": img.originalImageId || img.id,
-              "image_url": img.url
+               image_id: img.originalImageId,
+               image_url: img.url,
+               hotel_id: img.hotelId,
+               hotel_name: img.hotelName,
+               "tag name": "",
+               title1: "",
+               title2: "",
+               content: ""
            });
-        });
-      }
+       } else {
+           img.tags.forEach(t => {
+               const def = tagLookup.get(t);
+               exportData.push({
+                  image_id: img.originalImageId,
+                  image_url: img.url,
+                  hotel_id: img.hotelId,
+                  hotel_name: img.hotelName,
+                  "tag name": t, // Use "tag name" as per user implication/standard
+                  title1: def?.title1 || "",
+                  title2: def?.title2 || "",
+                  content: def?.content || ""
+               });
+           });
+       }
     });
 
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
-    
-    // Determine filename
-    const firstItem = images.find(i => i.hotelId);
-    const hotelId = firstItem?.hotelId || 'export';
-    const hotelName = firstItem?.hotelName || '';
-    const filename = `${hotelId}${hotelName ? '_' + hotelName : ''}.json`;
-
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href",     dataStr);
-    downloadAnchorNode.setAttribute("download", filename);
-    document.body.appendChild(downloadAnchorNode); 
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pavo-labels-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
-  // Filter
+  // Filter Logic
   const filteredImages = useMemo(() => {
-    if (!searchTerm) return images;
-    const lowerTerm = searchTerm.toLowerCase();
+    const term = searchTerm.toLowerCase();
     return images.filter(img => 
-      img.filename.toLowerCase().includes(lowerTerm) || 
-      img.url.toLowerCase().includes(lowerTerm) ||
-      img.tags.some(t => t.toLowerCase().includes(lowerTerm)) ||
-      (img.hotelId && String(img.hotelId).toLowerCase().includes(lowerTerm)) ||
-      (img.originalImageId && String(img.originalImageId).toLowerCase().includes(lowerTerm))
+      img.filename.toLowerCase().includes(term) ||
+      img.tags.some(t => t.toLowerCase().includes(term)) ||
+      String(img.originalImageId || '').includes(term) ||
+      String(img.hotelId || '').includes(term)
     );
   }, [images, searchTerm]);
 
-  // Pagination for grid
-  const [displayLimit, setDisplayLimit] = useState(24);
-  const visibleImages = filteredImages.slice(0, displayLimit);
+  const labeledCount = useMemo(() => images.filter(i => i.tags.length > 0).length, [images]);
 
+  // Keyboard Navigation for Detail View
   useEffect(() => {
-    const handleScroll = () => {
-      if (
-        window.innerHeight + window.scrollY >= document.body.offsetHeight - 1000 &&
-        visibleImages.length < filteredImages.length
-      ) {
-        setDisplayLimit(prev => Math.min(prev + 24, filteredImages.length));
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedImage) return;
+      
+      const currentIndex = filteredImages.findIndex(i => i.id === selectedImage.id);
+      if (currentIndex === -1) return;
+
+      if (e.key === 'ArrowLeft') {
+         const prev = filteredImages[currentIndex - 1];
+         if (prev) setSelectedImage(prev);
+      } else if (e.key === 'ArrowRight') {
+         const next = filteredImages[currentIndex + 1];
+         if (next) setSelectedImage(next);
+      } else if (e.key === 'Escape') {
+         setSelectedImage(null);
+      } else {
+         // Number keys for quick tagging (1-9)
+         const num = parseInt(e.key);
+         if (!isNaN(num) && num > 0 && num <= 9 && num <= tagDefs.length) {
+             handleToggleTag(selectedImage.id, tagDefs[num-1].tag);
+         }
       }
     };
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [visibleImages.length, filteredImages.length]);
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedImage, filteredImages, tagDefs]);
 
-  // Lightbox selection
-  const selectedIndex = useMemo(() => 
-    filteredImages.findIndex(img => img.id === selectedImageId)
-  , [selectedImageId, filteredImages]);
-  
-  const selectedImage = selectedIndex !== -1 ? filteredImages[selectedIndex] : null;
+  // Update selected image reference when images change (to reflect tag updates in modal)
+  const activeImage = useMemo(() => 
+    selectedImage ? images.find(i => i.id === selectedImage.id) || selectedImage : null
+  , [selectedImage, images]);
 
-  const handleNext = () => {
-    if (selectedIndex < filteredImages.length - 1) {
-      setSelectedImageId(filteredImages[selectedIndex + 1].id);
-    }
-  };
 
-  const handlePrev = () => {
-    if (selectedIndex > 0) {
-      setSelectedImageId(filteredImages[selectedIndex - 1].id);
-    }
-  };
+  // --- Render ---
 
   if (step === 'setup') {
     return (
       <SetupScreen 
         onStart={handleStart} 
-        onLoadDemo={handleLoadDemo} 
+        onLoadDemo={handleLoadDemo}
         onImportSession={handleImportSession}
       />
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 pb-20">
       <Header 
-        viewMode={viewMode} 
-        setViewMode={setViewMode} 
+        viewMode={viewMode}
+        setViewMode={setViewMode}
         searchTerm={searchTerm}
         setSearchTerm={setSearchTerm}
         totalCount={images.length}
-        labeledCount={images.filter(i => i.tags.length > 0).length}
+        labeledCount={labeledCount}
         onExport={handleExport}
         onReset={handleReset}
       />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="mt-6">
         {filteredImages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-full mb-4">
-              <Search className="w-8 h-8 text-slate-400" />
-            </div>
-            <h3 className="text-lg font-medium text-slate-900 dark:text-slate-100">未找到图片</h3>
-            <p className="text-slate-500 dark:text-slate-400">尝试调整搜索关键词</p>
+          <div className="text-center py-20 text-slate-400">
+            <Search className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p className="text-lg">没有找到匹配的图片</p>
           </div>
         ) : (
           <>
             {viewMode === 'grid' && (
-              <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
-                {visibleImages.map((img) => (
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 columns-1 sm:columns-2 md:columns-3 lg:columns-4 xl:columns-5 gap-4 space-y-4 pb-10">
+                {filteredImages.map(img => (
                   <ImageCard 
                     key={img.id} 
                     image={img} 
-                    onClick={() => setSelectedImageId(img.id)}
+                    onClick={() => setSelectedImage(img)}
                   />
                 ))}
               </div>
             )}
-            
             {viewMode === 'list' && (
-              <ListView 
-                images={visibleImages} 
-                onSelect={(img) => setSelectedImageId(img.id)}
-              />
+              <ListView images={filteredImages} onSelect={setSelectedImage} />
             )}
-
             {viewMode === 'summary' && (
               <SummaryView 
                 images={filteredImages} 
                 availableTags={tagDefs} 
-                onSelect={(img) => setSelectedImageId(img.id)} 
+                onSelect={setSelectedImage} 
               />
-            )}
-
-            {/* Loading Indicator for infinite scroll (only in grid/list) */}
-            {viewMode !== 'summary' && visibleImages.length < filteredImages.length && (
-              <div className="py-8 text-center">
-                <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
-              </div>
             )}
           </>
         )}
       </main>
 
-      {/* Lightbox Modal */}
-      {selectedImage && (
-        <Lightbox 
-          image={selectedImage} 
-          availableTags={tagDefs}
-          onToggleTag={(tag) => handleToggleTag(selectedImage.id, tag)}
-          onClose={() => setSelectedImageId(null)} 
-          onNext={handleNext}
-          onPrev={handlePrev}
-          hasNext={selectedIndex < filteredImages.length - 1}
-          hasPrev={selectedIndex > 0}
-          currentIndex={selectedIndex}
-          totalCount={filteredImages.length}
-        />
+      {/* Detail Modal */}
+      {activeImage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <button 
+             onClick={() => setSelectedImage(null)}
+             className="absolute top-4 right-4 p-2 text-white/50 hover:text-white transition-colors"
+          >
+            <X className="w-8 h-8" />
+          </button>
+
+          <div className="w-full max-w-6xl h-[85vh] bg-white dark:bg-slate-900 rounded-3xl overflow-hidden shadow-2xl flex flex-col md:flex-row">
+             
+             {/* Image Container */}
+             <div className="flex-1 bg-black flex items-center justify-center relative group">
+                <img 
+                   src={activeImage.url} 
+                   alt={activeImage.filename} 
+                   className="max-w-full max-h-full object-contain"
+                />
+                
+                {/* Navigation Buttons */}
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const idx = filteredImages.findIndex(i => i.id === activeImage.id);
+                    if (idx > 0) setSelectedImage(filteredImages[idx - 1]);
+                  }}
+                  className="absolute left-4 p-3 rounded-full bg-white/10 text-white hover:bg-white/20 backdrop-blur-md transition-all disabled:opacity-0"
+                  disabled={filteredImages.findIndex(i => i.id === activeImage.id) === 0}
+                >
+                   <ChevronLeft className="w-6 h-6" />
+                </button>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const idx = filteredImages.findIndex(i => i.id === activeImage.id);
+                    if (idx < filteredImages.length - 1) setSelectedImage(filteredImages[idx + 1]);
+                  }}
+                  className="absolute right-4 p-3 rounded-full bg-white/10 text-white hover:bg-white/20 backdrop-blur-md transition-all disabled:opacity-0"
+                  disabled={filteredImages.findIndex(i => i.id === activeImage.id) === filteredImages.length - 1}
+                >
+                   <ChevronRight className="w-6 h-6" />
+                </button>
+             </div>
+
+             {/* Sidebar Controls */}
+             <div className="w-full md:w-96 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col">
+                <div className="p-6 border-b border-slate-100 dark:border-slate-800">
+                   <h2 className="text-lg font-bold text-slate-900 dark:text-white truncate" title={activeImage.filename}>
+                     {activeImage.filename}
+                   </h2>
+                   <div className="flex flex-wrap gap-2 mt-2 text-xs text-slate-500">
+                      {activeImage.hotelName && <span>{activeImage.hotelName}</span>}
+                      {activeImage.originalImageId && <span>ID: {activeImage.originalImageId}</span>}
+                   </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6">
+                   <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">选择标签 (快捷键 1-{Math.min(9, tagDefs.length)})</h3>
+                   <div className="space-y-2">
+                      {tagDefs.map((def, idx) => {
+                         const isActive = activeImage.tags.includes(def.tag);
+                         return (
+                            <button
+                              key={def.tag}
+                              onClick={() => handleToggleTag(activeImage.id, def.tag)}
+                              className={`
+                                w-full flex items-center justify-between p-3 rounded-xl border text-left transition-all duration-200 group
+                                ${isActive 
+                                  ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-500 text-blue-700 dark:text-blue-300 shadow-sm' 
+                                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-700'
+                                }
+                              `}
+                            >
+                               <div className="min-w-0 flex-1 mr-2">
+                                  <div className="font-bold text-sm flex items-center gap-2">
+                                     {idx < 9 && <span className="w-5 h-5 rounded flex items-center justify-center bg-slate-100 dark:bg-slate-700 text-slate-400 text-[10px] flex-shrink-0">{idx + 1}</span>}
+                                     <span className="truncate">{def.tag}</span>
+                                  </div>
+                                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 ml-7 truncate">
+                                     {def.title1} {def.title2 ? `· ${def.title2}` : ''}
+                                  </div>
+                                  {def.content && (
+                                     <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-1 ml-7 leading-snug">
+                                        {def.content}
+                                     </div>
+                                  )}
+                               </div>
+                               {isActive && <CheckCircle2 className="w-5 h-5 text-blue-500 flex-shrink-0" />}
+                            </button>
+                         );
+                      })}
+                   </div>
+                </div>
+             </div>
+          </div>
+        </div>
       )}
     </div>
   );
-}
+};
+
+export default App;
